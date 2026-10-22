@@ -3,8 +3,10 @@ import { apiClient, CreateBookingRequest, Booking, generateIdempotencyKey } from
 // NEW: import WalletConnection type from updated wallet utils
 import type { WalletConnection } from "@/lib/wallet";
 // NEW: import real wallet store and signTransaction from stellar-wallet-connect
-import { useWalletStore, signTransaction } from "@/lib/stellar-wallet-connect";
+import { getActiveWalletContext, useWalletStore, signTransaction } from "@/lib/stellar-wallet-connect";
 import { toast } from "sonner";
+import { addPendingSync } from "@/lib/offline-storage";
+import { walletContextMatches } from "@/lib/wallet-context";
 
 export type BookingStep = 'details' | 'wallet' | 'payment' | 'signing' | 'submitting' | 'confirming' | 'success' | 'error';
 
@@ -85,6 +87,12 @@ export const useBookingFlow = (): [UseBookingFlowState, UseBookingFlowActions] =
   const createBooking = useCallback(async (request: CreateBookingRequest): Promise<boolean> => {
     setProcessing(true, 'Creating booking...');
 
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      addPendingSync('booking', request);
+      setError('You are offline. Your booking has been saved and will be processed when you reconnect.');
+      return false;
+    }
+
     try {
       const idempotencyKey = generateIdempotencyKey();
       const response = await apiClient.createBooking(request, idempotencyKey);
@@ -137,7 +145,38 @@ export const useBookingFlow = (): [UseBookingFlowState, UseBookingFlowActions] =
         return false;
       }
 
+      // Wallet extensions can switch accounts or networks while the approval
+      // modal is open. Never submit a signature produced in a different
+      // context from the transaction we built.
+      const currentStoreState = useWalletStore.getState();
+      let activeContext: { address: string; network: 'testnet' | 'mainnet' | '' };
+      try {
+        activeContext = await getActiveWalletContext();
+      } catch {
+        setError('Unable to verify the active wallet after signing. Please reconnect and try again.');
+        return false;
+      }
+      const activeAddress = activeContext.address || currentStoreState.address;
+      const activeNetwork = activeContext.network || currentStoreState.network;
+      const expectedNetwork = state.networkPassphrase.includes('Test SDF') ? 'testnet' : 'mainnet';
+      if (!walletContextMatches({
+        isConnected: currentStoreState.isConnected,
+        expectedAddress: state.wallet?.publicKey || '',
+        expectedNetwork,
+        activeAddress,
+        activeNetwork,
+      })) {
+        setError('Wallet account or network changed while signing. Please reconnect and create the transaction again.');
+        return false;
+      }
+
       setProcessing(true, 'Submitting transaction to blockchain...');
+
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        addPendingSync('booking', { bookingId: state.booking.id, signedXdr });
+        setError('You are offline. Your transaction has been saved and will be submitted when you reconnect.');
+        return false;
+      }
 
       // Submit signed transaction
       const response = await apiClient.submitSignedTransaction(
