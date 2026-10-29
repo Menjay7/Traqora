@@ -3,18 +3,22 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
-import { 
-  Plane, 
-  Clock, 
-  MapPin, 
-  Star, 
-  Wallet, 
+import {
+  Plane,
+  Clock,
+  MapPin,
+  Star,
+  Wallet,
   ArrowRight,
   Users,
   Zap
 } from "lucide-react"
 import Link from "next/link"
+import { airportChangeNotices, segmentsFromFlight, type ItinerarySegment } from "@/app/search/airport-change"
+import { AirportChangeWarning } from "@/app/search/airport-change-warning"
+import { CarrierLabels } from "./carrier-labels"
 
 export interface Flight {
   id: string
@@ -26,20 +30,38 @@ export interface Flight {
   arrival_time?: string
   airline: string
   airline_name?: string
+  marketingCarrier?: string
+  operatingCarrier?: string
+  providerOfferId?: string
+  segments?: Array<{
+    marketingCarrier: string
+    operatingCarrier?: string
+  }>
   stops: number
   duration: number // in minutes
   price: number
   rating: number
   available_seats: number
   class: "economy" | "premium_economy" | "business" | "first"
+  date?: string
+  provenance?: {
+    source: string
+    imported_at: string
+    source_updated_at?: string
+    freshness: "fresh" | "stale" | "unknown"
+  }
   aircraft?: string
   amenities?: string[]
+  segments?: ItinerarySegment[]
 }
 
 interface FlightCardProps {
   flight: Flight
   showXLMPrice?: boolean
   xlmRate?: number // USD to XLM conversion rate
+  compareSelectable?: boolean
+  compareSelected?: boolean
+  onToggleCompare?: (flightId: string) => void
 }
 
 const airlineNames: Record<string, string> = {
@@ -64,7 +86,14 @@ const airlineLogos: Record<string, string> = {
   "NK": "/airlines/spirit.png",
 }
 
-export function FlightCard({ flight, showXLMPrice = true, xlmRate = 0.12 }: FlightCardProps) {
+export function FlightCard({
+  flight,
+  showXLMPrice = true,
+  xlmRate = 0.12,
+  compareSelectable = false,
+  compareSelected = false,
+  onToggleCompare,
+}: FlightCardProps) {
   const formatTime = (dateString: string) => {
     return new Date(dateString).toLocaleTimeString("en-US", {
       hour: "2-digit",
@@ -105,13 +134,38 @@ export function FlightCard({ flight, showXLMPrice = true, xlmRate = 0.12 }: Flig
   const xlmPrice = flight.price / xlmRate
   const airlineName = airlineNames[flight.airline] || flight.airline_name || flight.airline
   const airlineLogo = airlineLogos[flight.airline]
+  const localDepartureDate = new Date(flight.departure_time).toLocaleDateString("en-CA")
+  const hasDateMismatch = Boolean(flight.date && localDepartureDate !== flight.date)
 
   return (
     <Card className="hover:shadow-lg transition-shadow duration-200 border-0 bg-card/50 backdrop-blur-sm">
       <CardContent className="p-6">
+        {hasDateMismatch && (
+          <div
+            className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            role="status"
+          >
+            Departure is listed as {flight.date} at {flight.from}; your local timezone shows {localDepartureDate}.
+            Confirm the airport date before booking.
+          </div>
+        )}
+        {flight.provenance && (
+          <div className="mb-4 flex flex-wrap gap-2 text-xs text-muted-foreground" aria-label="Flight data provenance">
+            <span>Source: {flight.provenance.source}</span>
+            <span>Freshness: {flight.provenance.freshness}</span>
+          </div>
+        )}
         <div className="flex flex-col lg:flex-row lg:items-center gap-4">
           {/* Airline Info */}
           <div className="flex items-center gap-3 lg:w-48">
+            {compareSelectable && (
+              <Checkbox
+                id={`compare-${flight.id}`}
+                checked={compareSelected}
+                onCheckedChange={() => onToggleCompare?.(flight.id)}
+                aria-label={`Select ${airlineName} flight for comparison`}
+              />
+            )}
             {airlineLogo && (
               <img 
                 src={airlineLogo} 
@@ -126,6 +180,21 @@ export function FlightCard({ flight, showXLMPrice = true, xlmRate = 0.12 }: Flig
             <div>
               <div className="font-medium text-sm">{airlineName}</div>
               <div className="text-xs text-muted-foreground">{flight.airline}</div>
+              {(flight.segments?.length
+                ? flight.segments
+                : [
+                    {
+                      marketingCarrier: flight.marketingCarrier || flight.airline,
+                      operatingCarrier: flight.operatingCarrier,
+                    },
+                  ]
+              ).map((segment, index) => (
+                <CarrierLabels
+                  key={`${segment.marketingCarrier}-${index}`}
+                  marketingCarrier={segment.marketingCarrier}
+                  operatingCarrier={segment.operatingCarrier}
+                />
+              ))}
             </div>
           </div>
 
@@ -162,6 +231,7 @@ export function FlightCard({ flight, showXLMPrice = true, xlmRate = 0.12 }: Flig
                 )}
               </div>
             </div>
+            <AirportChangeWarning notices={airportChangeNotices(segmentsFromFlight(flight))} />
           </div>
 
           {/* Flight Details */}
